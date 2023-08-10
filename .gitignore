@@ -2,6 +2,7 @@ __pycache__
 *.ckpt
 *.safetensors
 *.pth
+*.zip
 /ESRGAN/*
 /SwinIR/*
 /repositories
@@ -37,3 +38,4 @@ notification.mp3
 /node_modules
 /package-lock.json
 /.coverage*
+/automation/output/*
