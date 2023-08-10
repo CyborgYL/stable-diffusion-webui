@@ -3,6 +3,7 @@ __pycache__
 *.safetensors
 *.pth
 *.zip
+*.png
 /ESRGAN/*
 /SwinIR/*
 /repositories
