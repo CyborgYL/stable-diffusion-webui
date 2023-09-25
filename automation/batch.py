@@ -1,4 +1,5 @@
 import io
+import shutil
 import cv2
 import base64
 import requests
@@ -6,66 +7,74 @@ from pathlib import Path
 import os
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
+import json
+import utility
+    
 # A1111 URL
-url = "http://127.0.0.1:7860"
-orinial_prompt = "(realistic:1.0),style by pixar disney,beautiful,masterpiece,best quality, cheerful,<lora:add_detail:1>, <lora:blindbox_v1_mix:0.3>"
+url = "http://127.0.0.1:7862"
 
 rootDir = os.path.dirname(os.path.realpath(__file__))
-inputDir = rootDir + "/input/"
-outputDir = rootDir + "/output/"
+model = 'ToonMe'
+runID = '0918'
+
+inputDir = f"{rootDir}/input/test"
+outputDir = f"{rootDir}/output/{model}_{runID}/caption"
+promptDir = f"{rootDir}/prompt"
+if not os.path.exists(outputDir):
+    os.makedirs(outputDir)
+category_data = utility.loadCategory(f"{promptDir}/prompt.xlsx", model)
+
 for image in os.listdir(inputDir):
- 
     # check if the image ends with png
-    if (image.endswith(".png")):
-        tag = Path(image).stem
-        print(tag)
+    if (image.endswith('.png') or image.endswith('.jpg') or image.endswith('.PNG') or image.endswith('.JPG')):
+       
+        imageName = Path(image).stem
+        index = imageName.split('_')[0]
+        blip = imageName.split('_')[1]
+        fixedBlip = utility.fixTag(blip)
+        category, tag = utility.detectCategory(category_data, fixedBlip)
+        prompt_tag = fixedBlip
+        if os.path.isfile(f'{outputDir}/all/{index}_{category}_{prompt_tag}.png'):
+            print(f'File "{index}_{category}_{prompt_tag}" exists, skip...')
+            continue
+        generated_prompt_file = f"{promptDir}/generated/{model}/{category}.json"
+        if not os.path.exists(generated_prompt_file):
+            print(f'category:{category} not ready, skipping image...{imageName}')
+            continue
         # Read Image in RGB order
-        img = cv2.imread(inputDir + image)
+        img = cv2.imread(f'{inputDir}/{image}')
         # Encode into PNG and send to ControlNet
         retval, bytes = cv2.imencode('.png', img)
         encoded_image = base64.b64encode(bytes).decode('utf-8')
         # A1111 payload
-        payload = {
-            "prompt": "(" + tag + ":1.1)," + orinial_prompt,
-            "negative_prompt": "(morbid:1.2),(horror:1.1),(cropped:1.2),blurry,evil,(negative_hand-neg:1.0),(easynegative:0.8),ugly,winkle,extra head,long body,long neck,long finger,out of frame,long face,extra face,terrifying,bad proportion,malformed,nsfw,nude,nudity,blood,violence,weapon,brand,logo,text,trademark,monster,ghost,grumpy",
-            "batch_size": 1,
-            "sampler_name": "Euler a",
-            "steps": 10,
-            "width": 384,
-            "height": 640,
-            "cfg_scale": 7.5,
-            "seed":42,
-            "save_images": True,
-            "enable_hr": True,
-            "denoising_strength": 0.7,
-            "hr_scale": 1.5,
-            "hr_upscaler": "Latent (nearest-exact)",
-            "hr_second_pass_steps": 15,
-            "alwayson_scripts": {
-                "controlnet": {
-                    "args": [
-                        {
-                            "input_image": encoded_image,
-                            "module": "invert",
-                            "model": "control_v11p_sd15_scribble [d4ba51ff]",
-                            "weight": 0.5,
-                            "resize_mode": "Just Resize",
-                            "width": 384,
-                            "height": 640,
-                            "control_mode":"Balanced"
-                        }
-                    ]
-                }
-            }
-        }
-     
-        # Trigger Generation
-        response = requests.post(url=f'{url}/sdapi/v1/txt2img', json=payload)
-        # Read results
-        r = response.json()
-        result = r['images'][0]
-        info = r['info']
-        metadata = PngInfo()
-        metadata.add_text("parameters", info)
-        image = Image.open(io.BytesIO(base64.b64decode(result.split(",", 1)[0])))
-        image.save(outputDir + tag +".png", pnginfo=metadata)
+        with open(generated_prompt_file,'r') as promptFile:
+            payload = json.load(promptFile)
+            orinial_prompt = payload["prompt"]
+            payload["alwayson_scripts"]["ControlNet"]["args"][0]["input_image"] = encoded_image
+            #fix seed for testing
+            payload['seed'] = 42
+            # Trigger Generation caption
+            payload["prompt"] = orinial_prompt.replace('{tag}', prompt_tag)
+            response = requests.post(url=f'{url}/sdapi/v1/txt2img', json=payload)
+            print(f'{index}_{category}--{fixedBlip}--{tag}')
+            # Read results
+            r = response.json()
+            if 'error' in r:
+                print(f'error: {r["error"]}, detail: {r["detail"]}')
+                continue
+            result = r['images'][0]
+            info_dict = json.loads(r['info'])
+            parameter = info_dict['infotexts'][0]
+            metadata = PngInfo()
+            metadata.add_text("parameters", parameter)
+            generated_image = Image.open(io.BytesIO(base64.b64decode(result.split(",", 1)[0])))
+            if not os.path.exists(f'{outputDir}/all'):
+                os.makedirs(f'{outputDir}/all')
+            if not os.path.exists(f'{outputDir}/all_jpg'):
+                os.makedirs(f'{outputDir}/all_jpg')
+            generated_image.save(f'{outputDir}/all/{index}_{category}_{prompt_tag}.png',quality=80, optimize=True, pnginfo=metadata)
+            generated_image.save(f'{outputDir}/all_jpg/{index}_{category}_{prompt_tag}.jpg',quality=80, optimize=True, pnginfo=metadata)
+            if not os.path.exists(f'{outputDir}/{category}'):
+                os.makedirs(f'{outputDir}/{category}')
+            generated_image.save(f'{outputDir}/{category}/{index}_{category}_{prompt_tag}.jpg',quality=80, optimize=True, pnginfo=metadata)
+            shutil.copy2(os.path.join(inputDir, image), f'{outputDir}/{category}/{index}_input_{category}_{prompt_tag}.jpg')
